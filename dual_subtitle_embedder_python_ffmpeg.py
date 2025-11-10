@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""
+Dual-Subtitle Embedder (English above Vietnamese, both near bottom)
+- Drag & drop GUI using tkinter + tkinterdnd2
+- Burns two SRT subtitle files into a single MP4 output via FFmpeg
+- Compression modes: Normal / Smaller / Smallest (+ optional 720p downscale)
+"""
 
 import os
 import platform
@@ -20,12 +26,14 @@ except Exception:
 
 APP_TITLE = "Dual-Subtitle Embedder (EN ↑ over VI)"
 
+# ======= Subtitle style (tweak here) =======
 DEFAULT_FONT = "Arial"
-DEFAULT_FONTSIZE = 26  
+DEFAULT_FONTSIZE = 26
 DEFAULT_OUTLINE = 2
 DEFAULT_SHADOW = 1
-EN_MARGIN_V = 120
-VI_MARGIN_V = 60
+# Default margins (pixels from bottom). Smaller = closer to the bottom border.
+EN_MARGIN_V = 60   # English just above Vietnamese
+VI_MARGIN_V = 24   # Vietnamese very near bottom
 
 # ======= Helpers =======
 VID_EXTS = {".mp4", ".mkv", ".mov", ".avi", ".m4v"}
@@ -49,25 +57,25 @@ def ffmpeg_escape_for_subtitles(path: str) -> str:
     return f"'{p}'"
 
 
-def build_filter_complex(en_srt: str, vi_srt: str, downscale_720: bool) -> str:
-    style_common = f"FontName={DEFAULT_FONT},Fontsize={DEFAULT_FONTSIZE},Outline={DEFAULT_OUTLINE},Shadow={DEFAULT_SHADOW}"
+def build_filter_complex(en_srt: str, vi_srt: str, downscale_720: bool, font_size: int, en_margin: int, vi_margin: int) -> str:
+    style_common = f"FontName={DEFAULT_FONT},Fontsize={font_size},Outline={DEFAULT_OUTLINE},Shadow={DEFAULT_SHADOW}"
     en = ffmpeg_escape_for_subtitles(en_srt)
     vi = ffmpeg_escape_for_subtitles(vi_srt)
 
     p1 = (
-        f"[0:v]subtitles={en}:charenc=UTF-8:force_style='Alignment=2,MarginV={EN_MARGIN_V},{style_common}'[v1]"
+        f"[0:v]subtitles={en}:charenc=UTF-8:force_style='Alignment=2,MarginV={en_margin},{style_common}'[v1]"
     )
     p2 = (
-        f"[v1]subtitles={vi}:charenc=UTF-8:force_style='Alignment=2,MarginV={VI_MARGIN_V},{style_common}'[v2]"
+        f"[v1]subtitles={vi}:charenc=UTF-8:force_style='Alignment=2,MarginV={vi_margin},{style_common}'[v2]"
     )
 
-
-    p3 = "[v2]scale=-2:720[vout]" if downscale_720 else "[v2]copy[vout]"  
-
+    # Optional scale to 720p height preserving aspect (for size reduction)
+    p3 = "[v2]scale=-2:720[vout]" if downscale_720 else "[v2]copy[vout]"  # copy is a no-op passthrough label
+    # Build; if copy, just relabel via format filter to keep a legal chain
     if downscale_720:
         chain = f"{p1};{p2};{p3}"
     else:
- 
+        # replace copy with a trivial format to create vout
         chain = f"{p1};{p2};[v2]format=yuv420p[vout]"
     return chain
 
@@ -79,13 +87,13 @@ def build_encode_args(mode: str):
         return ["-c:v", "libx265", "-preset", "medium", "-crf", "28"], ["-c:a", "aac", "-b:a", "128k"]
     if mode == "smaller":
         return ["-c:v", "libx264", "-preset", "medium", "-crf", "24"], ["-c:a", "aac", "-b:a", "160k"]
-   
+    # normal
     return ["-c:v", "libx264", "-preset", "medium", "-crf", "18"], ["-c:a", "aac", "-b:a", "192k"]
 
 
-def run_ffmpeg(video: str, en_srt: str, vi_srt: str, out_path: str, mode: str, downscale_720: bool, progress_cb=None) -> int:
+def run_ffmpeg(video: str, en_srt: str, vi_srt: str, out_path: str, mode: str, downscale_720: bool, font_size: int, en_margin: int, vi_margin: int, progress_cb=None) -> int:
     ffmpeg = ffmpeg_path_guess()
-    filter_complex = build_filter_complex(en_srt, vi_srt, downscale_720)
+    filter_complex = build_filter_complex(en_srt, vi_srt, downscale_720, font_size, en_margin, vi_margin)
     v_args, a_args = build_encode_args(mode)
 
     cmd = [
@@ -128,6 +136,10 @@ class App(TkBase):
         self.status_text = tk.StringVar(value="Drop files or click Browse…")
         self.mode = tk.StringVar(value="Smaller")
         self.downscale = tk.BooleanVar(value=False)
+        # UI-controlled subtitle parameters
+        self.font_size_var = tk.IntVar(value=24)
+        self.en_margin_var = tk.IntVar(value=60)
+        self.vi_margin_var = tk.IntVar(value=24)
 
         self._build_ui()
 
@@ -169,6 +181,16 @@ class App(TkBase):
         mode_box = ttk.Combobox(opts, textvariable=self.mode, values=["Normal", "Smaller", "Smallest"], state="readonly", width=12)
         mode_box.pack(side=tk.LEFT)
         ttk.Checkbutton(opts, text="Downscale to 720p", variable=self.downscale).pack(side=tk.LEFT, padx=12)
+
+        # Subtitle appearance
+        subopts = ttk.LabelFrame(main, text="Subtitles Appearance")
+        subopts.pack(fill=tk.X, pady=(4, 8))
+        ttk.Label(subopts, text="Font size:").pack(side=tk.LEFT, padx=(8, 6))
+        tk.Spinbox(subopts, from_=14, to=64, textvariable=self.font_size_var, width=4).pack(side=tk.LEFT)
+        ttk.Label(subopts, text="EN margin (px from bottom):").pack(side=tk.LEFT, padx=(12, 6))
+        tk.Spinbox(subopts, from_=10, to=300, textvariable=self.en_margin_var, width=5).pack(side=tk.LEFT)
+        ttk.Label(subopts, text="VI margin:").pack(side=tk.LEFT, padx=(12, 6))
+        tk.Spinbox(subopts, from_=5, to=300, textvariable=self.vi_margin_var, width=5).pack(side=tk.LEFT)
 
         # Progress + Action
         action = ttk.Frame(main)
@@ -284,14 +306,14 @@ class App(TkBase):
         self.progress.start(12)
         threading.Thread(
             target=self._run_embed,
-            args=(video, en, vi, out_path, self.mode.get(), self.downscale.get()),
+            args=(video, en, vi, out_path, self.mode.get(), self.downscale.get(), self.font_size_var.get(), self.en_margin_var.get(), self.vi_margin_var.get()),
             daemon=True,
         ).start()
 
-    def _run_embed(self, video, en, vi, out_path, mode, downscale):
+    def _run_embed(self, video, en, vi, out_path, mode, downscale, font_size, en_margin, vi_margin):
         start = time.time()
         try:
-            code = run_ffmpeg(video, en, vi, out_path, mode, downscale, progress_cb=lambda ts: self.status_text.set(f"Encoding… time={ts}"))
+            code = run_ffmpeg(video, en, vi, out_path, mode, downscale, font_size, en_margin, vi_margin, progress_cb=lambda ts: self.status_text.set(f"Encoding… time={ts}"))
         except Exception as e:
             self._finish(False, start, msg=str(e))
             return
